@@ -1205,8 +1205,10 @@ void Unit::CalculateSpellDamageTaken(SpellNonMeleeDamage *damageInfo, int32 dama
                     damage = int32(damage * float((100.0f + critPctDamageMod)/100.0f));
 
                 // Resilience - reduce crit damage
-                if (pVictim->GetTypeId() == TYPEID_PLAYER)
-                    damage -= ((Player*)pVictim)->GetMeleeCritDamageReduction(damage);
+                if (attackType != RANGED_ATTACK)
+                    damage -= pVictim->GetMeleeCritDamageReduction(damage);
+                else
+                    damage -= pVictim->GetRangedCritDamageReduction(damage);
             }
             // Spell weapon based damage CAN BE crit & blocked at same time
             if (blocked)
@@ -1231,8 +1233,7 @@ void Unit::CalculateSpellDamageTaken(SpellNonMeleeDamage *damageInfo, int32 dama
                 damageInfo->HitInfo|= SPELL_HIT_TYPE_CRIT;
                 damage = SpellCriticalDamageBonus(spellInfo, damage, pVictim);
                 // Resilience - reduce crit damage
-                if (pVictim->GetTypeId() == TYPEID_PLAYER)
-                    damage -= ((Player*)pVictim)->GetSpellCritDamageReduction(damage);
+                damage -= pVictim->GetSpellCritDamageReduction(damage);
             }
         }
         break;
@@ -1240,6 +1241,10 @@ void Unit::CalculateSpellDamageTaken(SpellNonMeleeDamage *damageInfo, int32 dama
 
     if (damageSchoolMask & SPELL_SCHOOL_MASK_NORMAL)
         damage = CalcArmorReducedDamage(pVictim, damage, spellInfo, attackType);
+
+    // only from players
+    if (GetTypeId() == TYPEID_PLAYER)
+        damage -= pVictim->GetSpellDamageReduction(damage);
 
     // Calculate absorb resist
     if (damage > 0)
@@ -1422,12 +1427,14 @@ void Unit::CalculateMeleeDamage(Unit *pVictim, uint32 damage, CalcDamageInfo *da
                 damageInfo->damage = int32((damageInfo->damage) * float((100.0f + mod)/100.0f));
 
             // Resilience - reduce crit damage
-            if (pVictim->GetTypeId() == TYPEID_PLAYER)
-            {
-                uint32 resilienceReduction = ((Player*)pVictim)->GetMeleeCritDamageReduction(damageInfo->damage);
-                damageInfo->damage      -= resilienceReduction;
-                damageInfo->cleanDamage += resilienceReduction;
-            }
+            uint32 resilienceReduction;
+            if (attackType != RANGED_ATTACK)
+                resilienceReduction = pVictim->GetMeleeCritDamageReduction(damageInfo->damage);
+            else
+                resilienceReduction = pVictim->GetRangedCritDamageReduction(damageInfo->damage);
+
+            damageInfo->damage      -= resilienceReduction;
+            damageInfo->cleanDamage += resilienceReduction;
             break;
         }
         case MELEE_HIT_PARRY:
@@ -1487,6 +1494,15 @@ void Unit::CalculateMeleeDamage(Unit *pVictim, uint32 damage, CalcDamageInfo *da
         default:
             break;
     }
+
+    // only from players
+    if (GetTypeId() == TYPEID_PLAYER)
+     {
+         if (attackType != RANGED_ATTACK)
+            damage -= pVictim->GetMeleeDamageReduction(damage);
+         else
+            damage -= pVictim->GetRangedDamageReduction(damage);
+     }
 
     // Calculate absorb resist
     if (int32(damageInfo->damage) > 0)
@@ -3149,13 +3165,10 @@ float Unit::GetUnitCriticalChance(WeaponAttackType attackType, const Unit *pVict
     crit += pVictim->GetTotalAuraModifier(SPELL_AURA_MOD_ATTACKER_SPELL_AND_WEAPON_CRIT_CHANCE);
 
     // reduce crit chance from Rating for players
-    if (pVictim->GetTypeId() == TYPEID_PLAYER)
-    {
-        if (attackType==RANGED_ATTACK)
-            crit -= ((Player*)pVictim)->GetRatingBonusValue(CR_CRIT_TAKEN_RANGED);
-        else
-            crit -= ((Player*)pVictim)->GetRatingBonusValue(CR_CRIT_TAKEN_MELEE);
-    }
+    if (attackType != RANGED_ATTACK)
+        crit -= pVictim->GetMeleeCritChanceReduction();
+    else
+        crit -= pVictim->GetRangedCritChanceReduction();
 
     // Apply crit chance from defence skill
     crit += (int32(GetMaxSkillValueForLevel(pVictim)) - int32(pVictim->GetDefenseSkillValue(this))) * 0.04f;
@@ -9633,8 +9646,7 @@ bool Unit::isSpellCrit(Unit *pVictim, SpellEntry const *spellProto, SpellSchoolM
                     // Modify critical chance by victim SPELL_AURA_MOD_ATTACKER_SPELL_AND_WEAPON_CRIT_CHANCE
                     crit_chance += pVictim->GetTotalAuraModifier(SPELL_AURA_MOD_ATTACKER_SPELL_AND_WEAPON_CRIT_CHANCE);
                     // Modify by player victim resilience
-                    if (pVictim->GetTypeId() == TYPEID_PLAYER)
-                        crit_chance -= ((Player*)pVictim)->GetRatingBonusValue(CR_CRIT_TAKEN_SPELL);
+                    crit_chance -= pVictim->GetSpellCritChanceReduction();
                 }
                 // scripted (increase crit chance ... against ... target by x%
                 AuraEffectList const& mOverrideClassScript = GetAurasByType(SPELL_AURA_OVERRIDE_CLASS_SCRIPTS);
@@ -14837,6 +14849,29 @@ void Unit::KnockbackFrom(float x, float y, float speedXY, float speedZ)
 
         player->GetSession()->SendPacket(&data);
     }
+}
+
+float Unit::GetCombatRatingReduction(CombatRating cr) const
+{
+    if (GetTypeId() == TYPEID_PLAYER)
+        return ((Player const*)this)->GetRatingBonusValue(cr);
+    else if (((Creature const*)this)->isPet())
+    {
+        // Player's pet have 0.4 resilience  from owner
+        if (Unit* owner = GetOwner())
+            if(owner->GetTypeId() == TYPEID_PLAYER)
+                return ((Player*)owner)->GetRatingBonusValue(cr) * 0.4f;
+    }
+
+    return 0.0f;
+}
+
+uint32 Unit::GetCombatRatingDamageReduction(CombatRating cr, float rate, float cap, uint32 damage) const
+{
+    float percent = GetCombatRatingReduction(cr) * rate;
+    if (percent > cap)
+        percent = cap;
+    return uint32 (percent * damage / 100.0f);
 }
 
 void Unit::JumpTo(float speedXY, float speedZ, bool forward)
