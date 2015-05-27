@@ -1703,7 +1703,7 @@ class MANGOS_DLL_SPEC Player : public Unit
         uint32 GetMeleeCritDamageReduction(uint32 damage) const;
         uint32 GetRangedCritDamageReduction(uint32 damage) const;
         uint32 GetSpellCritDamageReduction(uint32 damage) const;
-        uint32 GetDotDamageReduction(uint32 damage) const;
+        uint32 GetSpellDamageReduction(uint32 damage) const;
         uint32 GetBaseSpellPowerBonus() { return m_baseSpellPower; }
 
         float GetExpertiseDodgeOrParryReduction(WeaponAttackType attType) const;
